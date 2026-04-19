@@ -21,6 +21,11 @@ from diffusion_policy.common.memory_budget import (
     estimate_array_nbytes,
     format_gb,
 )
+from diffusion_policy.dataset.image_result_cache import (
+    build_cache_metadata,
+    open_or_build_image_result_cache,
+    use_disk_result_cache,
+)
 
 DEBUG_TIME = False # 控制是否打印性能分析日志
 
@@ -92,12 +97,14 @@ class HirolDataset(BaseImageDataset):
             delta_action=None,              # 兼容旧配置，当前数据集不在此处变换 action
             memory_limit_gb=None,           # 内存预算
             memory_reserve_gb=2.0,
+            load_result_add="ram",          # ram 或 SSD cache 路径；路径时保存解码后的 float32 图片结果
         ):
         # 调用父类的初始化  一行直接初始化父类变量
         super().__init__()
 
+        load_result_on_disk = use_disk_result_cache(load_result_add)
         if use_cache:
-            load_into_memory = True
+            load_into_memory = not load_result_on_disk
             preload_images = True
 
         # 将obs分为rgb_keys和lowdim_keys
@@ -141,7 +148,7 @@ class HirolDataset(BaseImageDataset):
                     format_gb(effective_budget_bytes),
                 )
                 load_into_memory = False
-            if preload_images and estimated_preload_bytes > effective_budget_bytes:
+            if preload_images and (not load_result_on_disk) and estimated_preload_bytes > effective_budget_bytes:
                 log.warning(
                     "Disabling preload_images because estimated preload footprint %s exceeds RAM budget %s.",
                     format_gb(estimated_preload_bytes),
@@ -171,7 +178,45 @@ class HirolDataset(BaseImageDataset):
 
         # 并行预加载分支  
         # 用线程池 先分配一个大数组  再将整段图片按chunk分给不同线程 检查总数是否等于步长、将结果放入bs_data_buffer[key]
-        if preload_images and use_parallel_loading:  # =True
+        load_result_cache_path = None
+        if load_result_on_disk:
+            image_shapes = {
+                key: tuple(obs_shape_meta[key]["shape"])
+                for key in rgb_keys
+            }
+            metadata = build_cache_metadata(
+                source_type="hirol_zarr",
+                dataset_path=dataset_path,
+                dataset_length=step_len,
+                rgb_keys=rgb_keys,
+                image_shapes=image_shapes,
+                extra={
+                    "source_image_shapes": {
+                        key: list(self.replay_buffer[key].shape)
+                        for key in rgb_keys
+                    },
+                    "source_image_dtypes": {
+                        key: str(self.replay_buffer[key].dtype)
+                        for key in rgb_keys
+                    },
+                },
+            )
+
+            def build_frame(frame_idx):
+                return {
+                    key: process_image(self.replay_buffer[key][frame_idx], image_shapes[key])
+                    for key in rgb_keys
+                }
+
+            obs_data_buffer, load_result_cache_path = open_or_build_image_result_cache(
+                load_result_add=load_result_add,
+                dataset_path=dataset_path,
+                metadata=metadata,
+                build_frame_fn=build_frame,
+                desc="Build Hirol decoded image cache",
+                logger=log,
+            )
+        elif preload_images and use_parallel_loading:  # =True
             # Determine optimal number of processes (reasonable limit)
             num_processes = min(50, max(1, cpu_count() // 4))
             log.info(f'Using {num_processes} processes for parallel loading')
@@ -270,6 +315,8 @@ class HirolDataset(BaseImageDataset):
         self.pad_after = pad_after
         self.key_first_k = key_first_k
         self.obs_data = obs_data_buffer
+        self.load_result_add = load_result_add
+        self.load_result_cache_path = load_result_cache_path
         self.max_time = 0
         self.long_time_counter = 0
         self.rgb_shape_meta = obs_shape_meta

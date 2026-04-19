@@ -71,3 +71,4 @@ dataset:
   # - If RAM is insufficient, run with task.dataset.preload_images=False, or set
   #   training.max_ram_gb so the dataset can disable preload when over budget.
   preload_images: true
+  load_result_add: ssd

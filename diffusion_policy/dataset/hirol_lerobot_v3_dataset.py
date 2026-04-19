@@ -18,6 +18,12 @@ from diffusion_policy.common.memory_budget import (
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.sampler import create_indices, downsample_mask, get_val_mask
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
+from diffusion_policy.dataset.image_result_cache import (
+    build_cache_metadata,
+    open_or_build_image_result_cache,
+    read_image_result,
+    use_disk_result_cache,
+)
 from diffusion_policy.model.common.normalizer import LinearNormalizer, SingleFieldLinearNormalizer
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
 
@@ -106,6 +112,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         preload_images: bool = False,
         memory_limit_gb: Optional[float] = None,
         memory_reserve_gb: float = 2.0,
+        load_result_add="ram",
     ):
         super().__init__()
         if window_sampling_strategy not in {"idx", "timestamp"}:
@@ -128,6 +135,9 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         self.sequence_length = horizon + n_latency_steps
         self.anchor_position = max(0, min(self.sequence_length - 1, (n_obs_steps or 1) - 1))
         self.image_data: Dict[str, np.ndarray] = {}
+        self.load_result_add = load_result_add
+        self.load_result_cache_path = None
+        load_result_on_disk = use_disk_result_cache(load_result_add)
 
         obs_shape_meta = shape_meta["obs"]
         self.rgb_keys = [key for key, attr in obs_shape_meta.items() if attr.get("type") == "rgb"]
@@ -191,7 +201,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
                 format_gb(effective_budget_bytes),
                 format_gb(estimated_preload_bytes),
             )
-            if preload_images and estimated_preload_bytes > effective_budget_bytes:
+            if preload_images and (not load_result_on_disk) and estimated_preload_bytes > effective_budget_bytes:
                 log.warning(
                     "Disabling LeRobot image preload because estimated footprint %s exceeds RAM budget %s.",
                     format_gb(estimated_preload_bytes),
@@ -199,7 +209,45 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
                 )
                 preload_images = False
 
-        if preload_images:
+        if load_result_on_disk:
+            image_shapes = {
+                key: tuple(self.shape_meta["obs"][key]["shape"])
+                for key in self.rgb_keys
+            }
+            metadata = build_cache_metadata(
+                source_type="hirol_lerobot_v3",
+                dataset_path=dataset_path,
+                dataset_length=self.dataset_length,
+                rgb_keys=self.rgb_keys,
+                image_shapes=image_shapes,
+                extra={
+                    "image_feature_map": self.image_feature_map,
+                },
+            )
+
+            def build_frame(frame_idx):
+                sample = self.lerobot_dataset[frame_idx]
+                frame_data = {}
+                for key in self.rgb_keys:
+                    feature_name = self.image_feature_map[key]
+                    if feature_name not in sample:
+                        raise KeyError(
+                            f"Feature {feature_name!r} missing from LeRobot sample. "
+                            f"Available keys: {list(sample.keys())}"
+                        )
+                    frame_data[key] = _coerce_image(sample[feature_name], image_shapes[key])
+                return frame_data
+
+            self.image_data, self.load_result_cache_path = open_or_build_image_result_cache(
+                load_result_add=load_result_add,
+                dataset_path=dataset_path,
+                metadata=metadata,
+                build_frame_fn=build_frame,
+                desc="Build LeRobot decoded image cache",
+                logger=log,
+            )
+            self.lerobot_dataset.close()
+        elif preload_images:
             self.image_data = self._preload_images()
             self.lerobot_dataset.close()
 
@@ -411,7 +459,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
 
         for key in self.rgb_keys:
             if key in self.image_data:
-                obs_dict[key] = self.image_data[key][obs_indices, ...].astype(np.float32, copy=False)
+                obs_dict[key] = read_image_result(self.image_data, key, obs_indices)
             else:
                 expected_shape = tuple(self.shape_meta["obs"][key]["shape"])
                 feature_name = self.image_feature_map[key]

@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task_lerobot_v3@task: hirol_fr3_pnp_cam_state_to_ee_unet_h8o4a4
+  - task_lerobot_v3@task: hirol_fr3_pnp_cam_state_to_ee_unet
 
 name: train_hirol_fr3_pnp_cam_state_to_ee_unet_h8o4a4
 _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
