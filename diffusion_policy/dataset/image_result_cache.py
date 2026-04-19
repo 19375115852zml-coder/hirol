@@ -1,7 +1,10 @@
+import atexit
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
+import signal
 from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -10,8 +13,11 @@ from filelock import FileLock
 from tqdm import tqdm
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 RAM_RESULT_LOCATIONS = {None, "", "ram", "memory", "mem"}
+_REGISTERED_CLEANUPS = set()
+_CLEANUP_LOGGERS = {}
+_SIGNAL_HANDLERS_INSTALLED = False
 
 
 def use_disk_result_cache(load_result_add) -> bool:
@@ -55,12 +61,13 @@ def open_or_build_image_result_cache(
     metadata: Mapping,
     build_frame_fn: Callable[[int], Mapping[str, np.ndarray]],
     desc: str,
-    chunk_frames: int = 64,
+    chunk_frames: int = 1,
     logger=None,
 ) -> Tuple[Dict[str, zarr.Array], str]:
     cache_path = _resolve_cache_path(load_result_add, dataset_path, metadata)
     lock_path = cache_path + ".lock"
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    _register_cache_cleanup(cache_path, logger=logger)
 
     with FileLock(lock_path):
         if _is_valid_cache(cache_path, metadata):
@@ -122,25 +129,98 @@ def _build_cache(
                 overwrite=True,
             )
 
-        for frame_idx in tqdm(range(dataset_length), desc=desc):
-            frame_data = build_frame_fn(frame_idx)
+        chunk_frames = min(max(1, int(chunk_frames)), max(1, dataset_length))
+        buffers = {
+            key: np.empty(
+                (chunk_frames,) + tuple(metadata["image_shapes"][key]),
+                dtype=np.float32,
+            )
+            for key in metadata["rgb_keys"]
+        }
+
+        for chunk_start in tqdm(range(0, dataset_length, chunk_frames), desc=desc):
+            chunk_end = min(chunk_start + chunk_frames, dataset_length)
+            for frame_idx in range(chunk_start, chunk_end):
+                frame_data = build_frame_fn(frame_idx)
+                local_idx = frame_idx - chunk_start
+                for key, buffer in buffers.items():
+                    image = np.asarray(frame_data[key])
+                    expected_shape = tuple(metadata["image_shapes"][key])
+                    if image.shape != expected_shape:
+                        raise ValueError(
+                            f"Decoded image {key!r} at frame {frame_idx} has shape {image.shape}, "
+                            f"expected {expected_shape}."
+                        )
+                    buffer[local_idx] = image
+
             for key, array in arrays.items():
-                image = np.asarray(frame_data[key])
-                expected_shape = tuple(metadata["image_shapes"][key])
-                if image.shape != expected_shape:
-                    raise ValueError(
-                        f"Decoded image {key!r} at frame {frame_idx} has shape {image.shape}, "
-                        f"expected {expected_shape}."
-                    )
-                array[frame_idx] = image
+                array[chunk_start:chunk_end] = buffers[key][:(chunk_end - chunk_start)]
 
         if os.path.exists(cache_path):
             shutil.rmtree(cache_path)
         os.replace(tmp_path, cache_path)
-    except Exception:
+    except BaseException:
         if os.path.exists(tmp_path):
             shutil.rmtree(tmp_path)
         raise
+
+
+def _register_cache_cleanup(cache_path: str, logger=None) -> None:
+    if multiprocessing.current_process().name != "MainProcess":
+        return
+
+    cache_path = os.path.abspath(cache_path)
+    if cache_path in _REGISTERED_CLEANUPS:
+        return
+    _REGISTERED_CLEANUPS.add(cache_path)
+    _CLEANUP_LOGGERS[cache_path] = logger
+
+    def cleanup():
+        _cleanup_cache_path(cache_path, logger=logger)
+
+    atexit.register(cleanup)
+    _install_signal_cleanup_handlers()
+
+
+def _cleanup_cache_path(cache_path: str, logger=None) -> None:
+    lock_path = cache_path + ".lock"
+    removed = False
+    if os.path.isdir(cache_path):
+        shutil.rmtree(cache_path, ignore_errors=True)
+        removed = True
+    if os.path.exists(lock_path):
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+    if removed and logger is not None:
+        logger.info("Removed decoded image result cache: %s", cache_path)
+
+
+def _cleanup_registered_caches() -> None:
+    for cache_path in list(_REGISTERED_CLEANUPS):
+        _cleanup_cache_path(cache_path, logger=_CLEANUP_LOGGERS.get(cache_path))
+
+
+def _install_signal_cleanup_handlers() -> None:
+    global _SIGNAL_HANDLERS_INSTALLED
+    if _SIGNAL_HANDLERS_INSTALLED:
+        return
+    _SIGNAL_HANDLERS_INSTALLED = True
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handler = signal.getsignal(signum)
+
+        def handler(received_signum, frame, previous_handler=previous_handler):
+            _cleanup_registered_caches()
+            if callable(previous_handler):
+                previous_handler(received_signum, frame)
+                return
+            if received_signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            raise SystemExit(128 + received_signum)
+
+        signal.signal(signum, handler)
 
 
 def _is_valid_cache(cache_path: str, metadata: Mapping) -> bool:
