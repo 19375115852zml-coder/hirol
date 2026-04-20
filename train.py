@@ -41,12 +41,26 @@ sys.stderr = open(sys.stderr.fileno(), mode='w', buffering=1)
 import hydra
 from omegaconf import OmegaConf
 import pathlib
+import os
 from hydra.core.hydra_config import HydraConfig
 from diffusion_policy.common.config_cli import rewrite_config_reference_argv
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 # allows arbitrary python code execution in configs using the ${eval:''} resolver
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+REPO_ROOT = pathlib.Path(__file__).parent.resolve()
+BCPOLICY_PACKAGE_ROOT = REPO_ROOT.joinpath("BCpolicy")
+DEFAULT_CONFIG_DIR = REPO_ROOT.joinpath("diffusion_policy", "config")
+
+if BCPOLICY_PACKAGE_ROOT.is_dir():
+    bcpolicy_path = str(BCPOLICY_PACKAGE_ROOT)
+    if bcpolicy_path not in sys.path:
+        sys.path.insert(0, bcpolicy_path)
+
+if DEFAULT_CONFIG_DIR.is_dir():
+    os.environ.setdefault("DIFFUSION_POLICY_CONFIG_DIR", str(DEFAULT_CONFIG_DIR))
 
 
 def _infer_resume_output_dir(cfg: OmegaConf):
@@ -93,9 +107,7 @@ def main(cfg: OmegaConf):
     workspace.run()
 
 if __name__ == "__main__":
-    default_config_dir = pathlib.Path(__file__).parent.joinpath(
-        'diffusion_policy', 'config'
-    )
+    default_config_dir = DEFAULT_CONFIG_DIR
     sys.argv = rewrite_config_reference_argv(
         sys.argv,
         default_config_dir=str(default_config_dir),
