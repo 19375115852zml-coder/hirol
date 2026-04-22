@@ -1,17 +1,17 @@
 defaults:
   - _self_
-  - /task_lerobot_v3@task: hirol_fr3_pnp_cam_state_to_ee_unet
+  - /task_lerobot_v3@task: hirol_fr3_pnp_cam_state_to_ee_unet_ram
 
-name: train_hirol_fr3_pnp_cam_state_to_ee_unet_h16o2a8
+name: train_hirol_fr3_pnp_cam_state_to_ee_unet_h16o2a8_batch4
 _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
 
-dataset_path: data/pnp_30_ep/pick_and_place_lerobotv3
+dataset_path: data/pick_and_place_lerobotv3
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: ${name}
 
-horizon: 32
+horizon: 16
 n_obs_steps: 2
 n_action_steps: 8
 n_latency_steps: 0
@@ -43,7 +43,7 @@ policy:
       name: resnet18
       weights: IMAGENET1K_V1
     resize_shape: null
-    crop_shape: [76, 76]
+    crop_shape: [202, 202]
     random_crop: True
     use_group_norm: True
     share_rgb_model: True
@@ -69,7 +69,7 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 512
+  batch_size: 2
   num_workers: 12
   shuffle: True
   pin_memory: True
@@ -77,7 +77,7 @@ dataloader:
   prefetch_factor: 1
 
 val_dataloader:
-  batch_size: 128
+  batch_size: 2
   num_workers: 4
   shuffle: False
   pin_memory: True
@@ -92,29 +92,29 @@ optimizer:
   weight_decay: 1.0e-6
 
 training:
-  device: "cuda:1"
+  device: "cuda:0"
   seed: 42
   debug: False
   resume: True
-  max_ram_gb: 100
+  max_ram_gb: 40
   memory_reserve_gb: 4
   enforce_process_ram_limit: False
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  num_epochs: 500
-  gradient_accumulate_every: 4
+  num_epochs: 1000
+  gradient_accumulate_every: 1
   use_ema: True
   freeze_encoder: True
-  rollout_every: 100
+  rollout_every: 50
   checkpoint_every: 10
-  val_every: 5
-  sample_every: 50
+  val_every: 1
+  sample_every: 5
   max_train_steps: null
   max_val_steps: null
   tqdm_interval_sec: 1.0
 
 logging:
-  project: diffusion_policy_debug
+  project: diffusion_policy_41ep_picknp
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}

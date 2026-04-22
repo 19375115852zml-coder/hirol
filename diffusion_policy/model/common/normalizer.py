@@ -10,7 +10,7 @@ from diffusion_policy.model.common.dict_of_tensor_mixin import DictOfTensorMixin
 
 
 class LinearNormalizer(DictOfTensorMixin):
-    avaliable_modes = ['limits', 'gaussian']
+    avaliable_modes = ['limits', 'gaussian', 'quantile']
     
     @torch.no_grad()
     def fit(self,
@@ -20,6 +20,7 @@ class LinearNormalizer(DictOfTensorMixin):
         mode='limits',
         output_max=1.,
         output_min=-1.,
+        quantile=0.98,
         range_eps=1e-4,
         fit_offset=True):
         if isinstance(data, dict):
@@ -30,6 +31,7 @@ class LinearNormalizer(DictOfTensorMixin):
                     mode=mode,
                     output_max=output_max,
                     output_min=output_min,
+                    quantile=quantile,
                     range_eps=range_eps,
                     fit_offset=fit_offset)
         else:
@@ -39,6 +41,7 @@ class LinearNormalizer(DictOfTensorMixin):
                     mode=mode,
                     output_max=output_max,
                     output_min=output_min,
+                    quantile=quantile,
                     range_eps=range_eps,
                     fit_offset=fit_offset)
     
@@ -99,7 +102,7 @@ class LinearNormalizer(DictOfTensorMixin):
 
 
 class SingleFieldLinearNormalizer(DictOfTensorMixin):
-    avaliable_modes = ['limits', 'gaussian']
+    avaliable_modes = ['limits', 'gaussian', 'quantile']
     
     @torch.no_grad()
     def fit(self,
@@ -109,6 +112,7 @@ class SingleFieldLinearNormalizer(DictOfTensorMixin):
             mode='limits',
             output_max=1.,
             output_min=-1.,
+            quantile=0.98,
             range_eps=1e-4,
             fit_offset=True):
         self.params_dict = _fit(data, 
@@ -117,6 +121,7 @@ class SingleFieldLinearNormalizer(DictOfTensorMixin):
             mode=mode,
             output_max=output_max,
             output_min=output_min,
+            quantile=quantile,
             range_eps=range_eps,
             fit_offset=fit_offset)
     
@@ -185,11 +190,13 @@ def _fit(data: Union[torch.Tensor, np.ndarray, zarr.Array],
         mode='limits',
         output_max=1.,
         output_min=-1.,
+        quantile=0.98,
         range_eps=1e-4,
         fit_offset=True):
-    assert mode in ['limits', 'gaussian']
+    assert mode in ['limits', 'gaussian', 'quantile']
     assert last_n_dims >= 0
     assert output_max > output_min
+    assert 0 < quantile <= 1
 
     # convert data to torch and type
     if isinstance(data, zarr.Array):
@@ -206,8 +213,14 @@ def _fit(data: Union[torch.Tensor, np.ndarray, zarr.Array],
     data = data.reshape(-1,dim)
 
     # compute input stats min max mean std
-    input_min, _ = data.min(axis=0)
-    input_max, _ = data.max(axis=0)
+    if mode == 'quantile':
+        tail = (1 - quantile) / 2
+        input_min = torch.quantile(data, tail, dim=0)
+        input_max = torch.quantile(data, 1 - tail, dim=0)
+        mode = 'limits'
+    else:
+        input_min, _ = data.min(axis=0)
+        input_max, _ = data.max(axis=0)
     input_mean = data.mean(axis=0)
     input_std = data.std(axis=0)
 

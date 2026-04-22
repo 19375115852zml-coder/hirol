@@ -142,7 +142,7 @@ class TrainDiffusionUnetImageWorkspace(BaseWorkspace):
             loader_name="train",
         )
         train_dataloader = DataLoader(dataset, **train_dataloader_kwargs)
-        normalizer = dataset.get_normalizer()
+        normalizer = dataset.get_normalizer(**cfg.get("normalizer", {}))
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()

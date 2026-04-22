@@ -59,3 +59,16 @@ dataset:
   timestamp_step_sec: null
   timestamp_tolerance_sec: null
   local_files_only: true
+  # Host requirement for preload_images=true:
+  # - Linux training host is preferred because DataLoader workers use fork and can share
+  #   the read-only numpy cache with copy-on-write.
+  # - This task has 3 RGB cameras at 224x224 stored as float32 CHW after preload:
+  #   3 cameras * 3 * 224 * 224 * 4 bytes ~= 1.72 MiB per frame.
+  # - Estimated image cache RAM ~= 1.72 MiB * total_frame_count, before DataLoader
+  #   prefetch batches, model, CUDA pinned memory, and OS reserve.
+  # - Practical rule: 30-episode small runs are usually fine on 64 GB RAM; for larger
+  #   datasets, compute the estimate above and keep at least 15-20 GB extra headroom.
+  # - If RAM is insufficient, run with task.dataset.preload_images=False, or set
+  #   training.max_ram_gb so the dataset can disable preload when over budget.
+  preload_images: true
+  load_result_add: ssd

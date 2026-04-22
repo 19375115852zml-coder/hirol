@@ -75,7 +75,7 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
         dataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseLowdimDataset)
         train_dataloader = DataLoader(dataset, **cfg.dataloader)
-        normalizer = dataset.get_normalizer()
+        normalizer = dataset.get_normalizer(**cfg.get("normalizer", {}))
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()

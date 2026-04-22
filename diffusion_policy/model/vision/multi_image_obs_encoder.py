@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Dict, Tuple, Union
 import copy
 import torch
@@ -14,6 +15,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
             rgb_model: Union[nn.Module, Dict[str,nn.Module]],
             resize_shape: Union[Tuple[int,int], Dict[str,tuple], None]=None,
             crop_shape: Union[Tuple[int,int], Dict[str,tuple], None]=None,
+            crop_img_keys = None,
             random_crop: bool=True,
             # replace BatchNorm with GroupNorm
             use_group_norm: bool=False,
@@ -28,7 +30,8 @@ class MultiImageObsEncoder(ModuleAttrMixin):
         Assumes low_dim input: B,D
         """
         super().__init__()
-
+        if crop_img_keys is not None:
+            crop_img_keys = set(crop_img_keys)
         rgb_keys = list()
         low_dim_keys = list()
         key_model_map = nn.ModuleDict()
@@ -73,7 +76,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
                 input_shape = shape
                 this_resizer = nn.Identity()
                 if resize_shape is not None:
-                    if isinstance(resize_shape, dict):
+                    if isinstance(resize_shape, Mapping):
                         h, w = resize_shape[key]
                     else:
                         h, w = resize_shape
@@ -84,11 +87,21 @@ class MultiImageObsEncoder(ModuleAttrMixin):
 
                 # configure randomizer
                 this_randomizer = nn.Identity()
-                if crop_shape is not None:
-                    if isinstance(crop_shape, dict):
+                if isinstance(crop_shape, Mapping):
+                    should_crop = key in crop_shape and (
+                        crop_img_keys is None or key in crop_img_keys
+                    )
+                else:
+                    should_crop = crop_shape is not None and (
+                        crop_img_keys is None or key in crop_img_keys
+                    )
+
+                if should_crop:
+                    if isinstance(crop_shape, Mapping):
                         h, w = crop_shape[key]
                     else:
                         h, w = crop_shape
+
                     if random_crop:
                         this_randomizer = CropRandomizer(
                             input_shape=input_shape,
@@ -98,15 +111,16 @@ class MultiImageObsEncoder(ModuleAttrMixin):
                             pos_enc=False
                         )
                     else:
-                        this_normalizer = torchvision.transforms.CenterCrop(
-                            size=(h,w)
+                        this_randomizer = torchvision.transforms.CenterCrop(
+                            size=(h, w)
                         )
+
                 # configure normalizer
                 this_normalizer = nn.Identity()
                 if imagenet_norm:
                     this_normalizer = torchvision.transforms.Normalize(
                         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-                
+
                 this_transform = nn.Sequential(this_resizer, this_randomizer, this_normalizer)
                 key_transform_map[key] = this_transform
             elif type == 'low_dim':

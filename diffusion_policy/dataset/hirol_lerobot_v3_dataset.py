@@ -435,9 +435,9 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
 
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
         normalizer = LinearNormalizer()
-        normalizer["action"] = SingleFieldLinearNormalizer.create_fit(self.action_data)
+        normalizer["action"] = SingleFieldLinearNormalizer.create_fit(self.action_data,**kwargs)
         for key in self.lowdim_keys:
-            normalizer[key] = SingleFieldLinearNormalizer.create_fit(self.lowdim_data[key])
+            normalizer[key] = SingleFieldLinearNormalizer.create_fit(self.lowdim_data[key],**kwargs)
         for key in self.rgb_keys:
             normalizer[key] = get_image_range_normalizer()
         return normalizer
@@ -452,7 +452,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         sequence_indices = self._sample_indices_to_sequence(idx)
         if self.window_sampling_strategy == "timestamp":
             sequence_indices = self._retime_sequence_indices(sequence_indices)
-
+          
         obs_indices = sequence_indices[: self.n_obs_steps]
         frame_cache: Dict[int, Dict] = {}
         obs_dict = {}
@@ -488,3 +488,11 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             "obs": dict_apply(obs_dict, _safe_torch_from_numpy),
             "action": _safe_torch_from_numpy(action),
         }
+# 一个torch
+# batch = 
+#     "obs": 
+#         "ee_cam_color": Tensor[B, 2, 3, 224, 224],
+#         "third_person_cam_color": Tensor[B, 2, 3, 224, 224],
+#         "side_cam_color": Tensor[B, 2, 3, 224, 224],
+#         "state_ee": Tensor[B, 2, 15]
+#     "action": Tensor[B, 16, 8],

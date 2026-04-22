@@ -42,6 +42,7 @@ import hydra
 from omegaconf import OmegaConf
 import pathlib
 import os
+import tempfile
 from hydra.core.hydra_config import HydraConfig
 from diffusion_policy.common.config_cli import rewrite_config_reference_argv
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
@@ -53,6 +54,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 REPO_ROOT = pathlib.Path(__file__).parent.resolve()
 BCPOLICY_PACKAGE_ROOT = REPO_ROOT.joinpath("BCpolicy")
 DEFAULT_CONFIG_DIR = REPO_ROOT.joinpath("diffusion_policy", "config")
+_TEMP_CONFIG_DIR = None
 
 if BCPOLICY_PACKAGE_ROOT.is_dir():
     bcpolicy_path = str(BCPOLICY_PACKAGE_ROOT)
@@ -89,12 +91,129 @@ def _infer_resume_output_dir(cfg: OmegaConf):
 
     return None
 
+
+def _get_file_config_dirs():
+    hydra_cfg = HydraConfig.get()
+    result = []
+    for source in getattr(hydra_cfg.runtime, "config_sources", []):
+        if getattr(source, "schema", None) != "file":
+            continue
+
+        source_path = getattr(source, "path", None)
+        if not source_path:
+            continue
+
+        config_dir = pathlib.Path(source_path)
+        if not config_dir.is_absolute():
+            config_dir = pathlib.Path(hydra_cfg.runtime.cwd).joinpath(config_dir)
+        result.append(config_dir)
+    return result
+
+
+def _load_task_config_from_ref(task_ref: str, config_dirs=None):
+    task_ref = os.path.expanduser(task_ref)
+    if not task_ref:
+        raise ValueError("Explicit task config cannot be empty.")
+    task_path = pathlib.Path(task_ref)
+    if task_path.suffix == "":
+        task_path = task_path.with_suffix(".yaml")
+
+    candidates = []
+    if task_path.is_absolute():
+        candidates.append(task_path)
+        candidates.append(DEFAULT_CONFIG_DIR.joinpath(str(task_path).lstrip("/")))
+    else:
+        if config_dirs is None:
+            config_dirs = _get_file_config_dirs()
+        for config_dir in config_dirs:
+            candidates.append(config_dir.joinpath(task_path))
+        candidates.append(DEFAULT_CONFIG_DIR.joinpath(str(task_path).lstrip("/")))
+        candidates.append(REPO_ROOT.joinpath(task_path))
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return OmegaConf.load(candidate)
+
+    searched = "\n".join(f"  - {path}" for path in candidates)
+    raise FileNotFoundError(
+        f"Could not find explicit task config {task_ref!r}. Searched:\n{searched}"
+    )
+
+
+def _resolve_explicit_task_config(cfg: OmegaConf):
+    task_ref = OmegaConf.select(cfg, "task", default=None)
+    if not isinstance(task_ref, str):
+        return cfg
+
+    cfg.task = _load_task_config_from_ref(task_ref)
+    return cfg
+
+
+def _find_cli_option_value(args, option):
+    for idx, arg in enumerate(args):
+        if arg == option and idx + 1 < len(args):
+            return args[idx + 1], idx, False
+        prefix = option + "="
+        if arg.startswith(prefix):
+            return arg[len(prefix):], idx, True
+    return None, None, None
+
+
+def _replace_cli_option_value(args, option, value):
+    old_value, idx, inline = _find_cli_option_value(args, option)
+    if idx is None:
+        return args + [f"{option}={value}"]
+    args = list(args)
+    if inline:
+        args[idx] = f"{option}={value}"
+    else:
+        args[idx + 1] = value
+    return args
+
+
+def _materialize_explicit_task_config_argv(args):
+    global _TEMP_CONFIG_DIR
+
+    config_dir, _, _ = _find_cli_option_value(args, "--config-dir")
+    config_name, _, _ = _find_cli_option_value(args, "--config-name")
+    if config_dir is None or config_name is None:
+        return args
+
+    config_dir_path = pathlib.Path(config_dir)
+    if not config_dir_path.is_absolute():
+        config_dir_path = REPO_ROOT.joinpath(config_dir_path)
+    config_path = config_dir_path.joinpath(config_name)
+    if not config_path.is_file():
+        return args
+
+    cfg = OmegaConf.load(config_path)
+    task_ref = OmegaConf.select(cfg, "task", default=None)
+    if not isinstance(task_ref, str):
+        return args
+
+    task_cfg = _load_task_config_from_ref(
+        task_ref,
+        config_dirs=[config_path.parent, DEFAULT_CONFIG_DIR],
+    )
+    cfg.task = task_cfg
+
+    _TEMP_CONFIG_DIR = tempfile.TemporaryDirectory(prefix="diffusion_policy_cfg_")
+    temp_config_dir = pathlib.Path(_TEMP_CONFIG_DIR.name)
+    temp_config_path = temp_config_dir.joinpath(config_path.name)
+    OmegaConf.save(config=cfg, f=temp_config_path, resolve=False)
+
+    args = _replace_cli_option_value(args, "--config-dir", str(temp_config_dir))
+    args = _replace_cli_option_value(args, "--config-name", temp_config_path.name)
+    return args
+
+
 @hydra.main(
     version_base=None,
     config_path=str(pathlib.Path(__file__).parent.joinpath(
         'diffusion_policy','config'))
 )
 def main(cfg: OmegaConf):
+    cfg = _resolve_explicit_task_config(cfg)
     # resolve immediately so all the ${now:} resolvers
     # will use the same time.
     OmegaConf.resolve(cfg)
@@ -112,4 +231,5 @@ if __name__ == "__main__":
         sys.argv,
         default_config_dir=str(default_config_dir),
     )
+    sys.argv = _materialize_explicit_task_config_argv(sys.argv)
     main()

@@ -1,11 +1,9 @@
-defaults:
-  - _self_
-  - /task_lerobot_v3@task: hirol_fr3_pnp_cam_state_to_ee_unet
+task: ../../../task_lerobot_v3/pick_n_palce/hirol_fr3_pnp_cam_state_to_ee_unet_ram.yaml
 
-name: train_hirol_fr3_pnp_cam_state_to_ee_unet_h16o2a8
+name: train_hirol_fr3_pnp_cam_state_to_ee_unet_ms_guassian
 _target_: diffusion_policy.workspace.train_diffusion_unet_image_workspace.TrainDiffusionUnetImageWorkspace
 
-dataset_path: data/pnp_30_ep/pick_and_place_lerobotv3
+dataset_path: data/pick_and_place_lerobotv3
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
@@ -43,7 +41,7 @@ policy:
       name: resnet18
       weights: IMAGENET1K_V1
     resize_shape: null
-    crop_shape: [76, 76]
+    crop_shape: [216, 216]
     random_crop: True
     use_group_norm: True
     share_rgb_model: True
@@ -68,10 +66,13 @@ ema:
   min_value: 0.0
   max_value: 0.9999
 
+normalizer:
+    mode: gaussian # limit todo:0.98
+
 dataloader:
-  batch_size: 512
+  batch_size: 128
   num_workers: 12
-  shuffle: False
+  shuffle: True
   pin_memory: True
   persistent_workers: True
   prefetch_factor: 1
@@ -96,25 +97,25 @@ training:
   seed: 42
   debug: False
   resume: True
-  max_ram_gb: 100
+  max_ram_gb: 70
   memory_reserve_gb: 4
   enforce_process_ram_limit: False
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  num_epochs: 500
-  gradient_accumulate_every: 4
+  num_epochs: 1000
+  gradient_accumulate_every: 1
   use_ema: True
   freeze_encoder: True
-  rollout_every: 100
+  rollout_every: 15
   checkpoint_every: 10
-  val_every: 5
-  sample_every: 50
+  val_every: 1
+  sample_every: 5
   max_train_steps: null
   max_val_steps: null
   tqdm_interval_sec: 1.0
 
 logging:
-  project: diffusion_policy_debug
+  project: diffusion_policy_41ep_picknp
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -126,8 +127,8 @@ checkpoint:
   topk:
     monitor_key: val_loss
     mode: min
-    k: 5
-    format_str: 'epoch={epoch:04d}-val_loss={val_loss:.6f}.ckpt'
+    k: 10
+    format_str: 'epoch={epoch:04d}_loss={val_loss:.3f}and{train_loss:.3f}.ckpt'
   save_last_ckpt: True
   save_last_snapshot: False
 
