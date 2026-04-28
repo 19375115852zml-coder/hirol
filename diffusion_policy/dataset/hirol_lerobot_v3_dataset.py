@@ -7,6 +7,7 @@ import os
 import cv2
 import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
 
 from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Dataset
@@ -15,6 +16,7 @@ from diffusion_policy.common.memory_budget import (
     estimate_array_nbytes,
     format_gb,
 )
+
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.sampler import create_indices, downsample_mask, get_val_mask
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
@@ -24,8 +26,10 @@ from diffusion_policy.dataset.image_result_cache import (
     read_image_result,
     use_disk_result_cache,
 )
+from diffusion_policy.dataset.img_randomer import Image_randomer
+
 from diffusion_policy.model.common.normalizer import LinearNormalizer, SingleFieldLinearNormalizer
-from diffusion_policy.common.normalize_util import get_image_range_normalizer
+from diffusion_policy.common.normalize_util import get_image_range_normalizer,  get_image_identity_normalizer
 
 
 def _to_numpy(value):
@@ -113,6 +117,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         memory_limit_gb: Optional[float] = None,
         memory_reserve_gb: float = 2.0,
         load_result_add="ram",
+        image_randomer_config: Optional[Mapping] = None,
     ):
         super().__init__()
         if window_sampling_strategy not in {"idx", "timestamp"}:
@@ -138,6 +143,13 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         self.load_result_add = load_result_add
         self.load_result_cache_path = None
         load_result_on_disk = use_disk_result_cache(load_result_add)
+        self.image_randomer_config = image_randomer_config
+        self.image_randomer = (
+            Image_randomer(dict(image_randomer_config))
+            if image_randomer_config is not None
+            else None
+        )
+
 
         obs_shape_meta = shape_meta["obs"]
         self.rgb_keys = [key for key, attr in obs_shape_meta.items() if attr.get("type") == "rgb"]
@@ -371,6 +383,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         return step_sizes
 
     def _sample_indices_to_sequence(self, sample_idx: int) -> np.ndarray:
+        # buffer数据全局   sample进行窗口采样
         buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = self.indices[sample_idx]
         sequence_indices = np.empty((self.sequence_length,), dtype=np.int64)
         last_valid_idx = max(buffer_start_idx, buffer_end_idx - 1)
@@ -422,6 +435,25 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             )
         return _coerce_image(sample[feature_name], expected_shape)
 
+    def _augment_image_sequence(self, images: np.ndarray) -> np.ndarray:
+        if self.image_randomer is None:
+            return images
+    
+        augmented_images = []
+        for image_chw in images:
+            image_hwc = np.transpose(image_chw, (1, 2, 0))
+            image_hwc = np.clip(image_hwc * 255.0, 0, 255).astype(np.uint8)
+            image_pil = Image.fromarray(image_hwc)
+    
+            augmented = self.image_randomer(image_pil)
+            if torch.is_tensor(augmented):
+                augmented = augmented.detach().cpu().numpy()
+            augmented = np.asarray(augmented, dtype=np.float32)
+    
+            augmented_images.append(augmented)
+    
+        return np.stack(augmented_images, axis=0)
+
     def get_validation_dataset(self) -> "HirolLeRobotV3Dataset":
         val_set = copy.copy(self)
         val_set.indices = create_indices(
@@ -431,7 +463,10 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             pad_after=self.pad_after,
             episode_mask=self.val_mask,
         )
+        val_set.image_randomer = None
+        val_set.image_randomer_config = None
         return val_set
+
 
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
         normalizer = LinearNormalizer()
@@ -439,7 +474,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         for key in self.lowdim_keys:
             normalizer[key] = SingleFieldLinearNormalizer.create_fit(self.lowdim_data[key],**kwargs)
         for key in self.rgb_keys:
-            normalizer[key] = get_image_range_normalizer()
+            normalizer[key] = get_image_range_normalizer() 
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
@@ -459,11 +494,11 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
 
         for key in self.rgb_keys:
             if key in self.image_data:
-                obs_dict[key] = read_image_result(self.image_data, key, obs_indices)
+                images = read_image_result(self.image_data, key, obs_indices)
             else:
                 expected_shape = tuple(self.shape_meta["obs"][key]["shape"])
                 feature_name = self.image_feature_map[key]
-                obs_dict[key] = np.stack(
+                images = np.stack(
                     [
                         self._load_frame_feature(
                             frame_idx=int(frame_idx),
@@ -475,6 +510,9 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
                     ],
                     axis=0,
                 )
+
+            obs_dict[key] = self._augment_image_sequence(images)
+
 
         for key in self.lowdim_keys:
             obs_dict[key] = self.lowdim_data[key][obs_indices, ...].astype(np.float32, copy=False)

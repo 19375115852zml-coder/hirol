@@ -16,6 +16,7 @@ def create_indices(
     pad_after = min(max(pad_after, 0), sequence_length-1)
 
     indices = list()
+    # 构建采样窗口  滑动采样
     for i in range(len(episode_ends)):
         if not episode_mask[i]:
             # skip episode

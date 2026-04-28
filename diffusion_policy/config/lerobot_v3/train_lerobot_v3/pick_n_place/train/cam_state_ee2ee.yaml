@@ -70,7 +70,7 @@ normalizer:
     mode: gaussian # limit todo:0.98
 
 dataloader:
-  batch_size: 128
+  batch_size: 64
   num_workers: 12
   shuffle: True
   pin_memory: True
@@ -78,7 +78,7 @@ dataloader:
   prefetch_factor: 1
 
 val_dataloader:
-  batch_size: 128
+  batch_size: 64
   num_workers: 4
   shuffle: False
   pin_memory: True

@@ -10,15 +10,16 @@ os.chdir(ROOT_DIR)
 import time
 import torch
 from torch.utils.data import DataLoader
-from diffusion_policy.dataset.hirol_dataset import HirolDataset
+from diffusion_policy.dataset.hirol_lerobot_v3_dataset import  HirolLeRobotV3Dataset
 
 def test_batch_performance():
     # Dataset configuration
-    image_shape = [3, 480, 640]
+    # image_shape = [3, 480, 640]
+    image_shape = [3,224,224]
     shape_meta = {
         'obs': {
             'state': {
-                'shape': [8],
+                'shape': [15],
                 'type': 'low_dim'
             },
             'ee_cam_color': {
@@ -35,14 +36,14 @@ def test_batch_performance():
             },
         },
         'action': {
-            'shape': [8]
+            'shape': [15]
         }
     }
 
-    dataset_path = "/home/zyx/dataset/dp/fr3/0920/water_pouring_1_step_0_skip_abs_jps.zarr"
+    dataset_path = "data/train_episode/moving_bread/moving_bread_hirol_lerobotv3"
 
-    print("Creating HirolDataset...")
-    dataset = HirolDataset(
+    print("Creating HirolLobotv3Dataset...")
+    dataset = HirolLeRobotV3Dataset(
         shape_meta=shape_meta,
         dataset_path=dataset_path,
         horizon=16,
