@@ -4,7 +4,7 @@ services:
   data_rerun:
     # build:
     #   context: ..
-    #   dockerfile: docker/Dockerfile
+    #   dockerfile: docker_for_train/Dockerfile
     image: zyx_hirol:v2
     user: teleophost
     working_dir: /workspace
@@ -36,4 +36,3 @@ services:
       - ../../../data:/workspace/data
       - /tmp/.X11-unix:/tmp/.X11-unix:rw # 给容器访问宿主机的X11权限
       - ${XAUTHORITY:-$HOME/.Xauthority}:/root/.Xauthority:ro
-

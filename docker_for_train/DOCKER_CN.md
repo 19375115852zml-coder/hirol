@@ -12,6 +12,23 @@
 * 开发机有项目代码目录
 * 目标机已拿到项目代码目录和离线镜像包 `dp-hirol-train.tar` 或 `dp-hirol-train.tar.gz`
 
+容器默认使用非 root 用户运行，默认 UID/GID 是 `1000:1000`。如果宿主机当前用户不是这个 UID/GID，建议在构建和启动前设置：
+
+```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
+```
+
+这样容器在挂载目录里创建的数据会归属当前宿主机用户，不需要后续手动降权。
+
+如果构建时报 `load metadata for docker.io/nvidia/cuda...`，说明 Docker 没有成功访问 Docker Hub 的 CUDA 基础镜像。可以先换一个可访问的镜像前缀再构建：
+
+```bash
+export CUDA_IMAGE=docker.m.daocloud.io/nvidia/cuda
+```
+
+如果你已经在 Docker daemon 里配置了可用的 Docker Hub mirror，也可以不设置 `CUDA_IMAGE`，继续使用默认的 `nvidia/cuda`。
+
 ## 1. 路径
 
 有两个东西，不是同一个路径：
@@ -22,7 +39,7 @@
 重点只有一条：
 
 * `docker load` 可以在任何目录执行，只要写对镜像包路径
-* `docker compose up` 必须在项目里的 `docker/` 目录执行，或者显式指定 `-f docker/compose.yaml`
+* `docker compose up` 必须在项目里的 `docker_for_train/` 目录执行，或者显式指定 `-f docker_for_train/compose.yaml`
 
 ## 2. 在宿主机安装 Docker
 
@@ -59,23 +76,27 @@ docker run --rm --gpus all nvidia/cuda:11.6.2-cudnn8-runtime-ubuntu20.04 nvidia-
 
 ## 4. 在开发v机上重新构建镜像
 
-如果你修改了依赖、代码或 `docker/Dockerfile`，需要先在开发机构建新镜像。
+如果你修改了依赖、代码或 `docker_for_train/Dockerfile`，需要先在开发机构建新镜像。
 
-进入项目的 `docker/` 目录：
+进入项目的 `docker_for_train/` 目录：
 
 ```bash
-cd /home/xxx/dp_hirol-main/docker
+cd /home/xxx/dp_hirol-main/docker_for_train
 ```
 
 构建 `trainer` 服务对应的镜像：
 
 ```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose build trainer
 ```
 
 如果怀疑 Docker 缓存导致旧依赖没有刷新，再改用完全重建：
 
 ```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose build --no-cache trainer
 ```
 
@@ -86,13 +107,13 @@ docker compose build --no-cache trainer
 把当前镜像导出成 `tar`：
 
 ```bash
-docker save -o /home/rei/mnt/code/dp_hirol-main/docker/dp-hirol-train.tar dp-hirol:train
+docker save -o /home/rei/mnt/code/dp_hirol-main/docker_for_train/dp-hirol-train.tar dp-hirol:train
 ```
 
 如果想直接交付压缩包，再压缩成 `tar.gz`：
 
-```bashv
-gzip -f /home/rei/mnt/code/dp_hirol-main/docker/dp-hirol-train.tar 
+```bash
+gzip -f /home/rei/mnt/code/dp_hirol-main/docker_for_train/dp-hirol-train.tar
 ```
 
 说明：
@@ -107,15 +128,15 @@ gzip -f /home/rei/mnt/code/dp_hirol-main/docker/dp-hirol-train.tar
 
 * 你修改了 `conda_environment.yaml`
 * 你修改了 `requirements/uv-common.txt`
-* 你修改了 `docker/Dockerfile`
+* 你修改了 `docker_for_train/Dockerfile`
 * 你希望容器里的 Python 包和镜像一起更新
 
 推荐按下面顺序执行。
 
-先进入项目的 `docker/` 目录：
+先进入项目的 `docker_for_train/` 目录：
 
 ```bash
-cd /home/xxx/dp_hirol-main/docker
+cd /home/xxx/dp_hirol-main/docker_for_train
 ```
 
 如果当前有旧容器正在运行，先停掉：
@@ -127,18 +148,24 @@ docker compose down
 重新构建镜像：
 
 ```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose build trainer
 ```
 
 如果怀疑缓存导致旧依赖没有被替换，再改用：
 
 ```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose build --no-cache trainer
 ```
 
 用新镜像重建容器：
 
 ```bash
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose up -d --force-recreate
 ```
 
@@ -185,14 +212,18 @@ docker images | grep dp-hirol
 假设项目放在 `/home/xxx/dp_hirol-main`，启动时执行：
 
 ```bash
-cd /home/xxx/dp_hirol-main/docker
+cd /home/xxx/dp_hirol-main/docker_for_train
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose up -d
 ```
 
-如果你修改过项目里的依赖文件，例如 `conda_environment.yaml`、`requirements/uv-common.txt` 或 `docker/Dockerfile`，只执行 `docker compose up -d` 不会刷新现有镜像，需要先重建：
+如果你修改过项目里的依赖文件，例如 `conda_environment.yaml`、`requirements/uv-common.txt` 或 `docker_for_train/Dockerfile`，只执行 `docker compose up -d` 不会刷新现有镜像，需要先重建：
 
 ```bash
-cd /home/xxx/dp_hirol-main/docker
+cd /home/xxx/dp_hirol-main/docker_for_train
+export LOCAL_UID=$(id -u)
+export LOCAL_GID=$(id -g)
 docker compose build --no-cache trainer
 docker compose up -d --force-recreate
 ```
@@ -217,10 +248,10 @@ docker compose exec trainer python -c "import wandb; print(wandb.__version__)"
 
 ## 9. 目录要求
 
-`docker/compose.yaml` 默认会挂载这些目录，所以项目根目录下需要存在：
+`docker_for_train/compose.yaml` 默认会挂载这些目录，所以项目根目录下需要存在：
 
 * `data/`
 * `outputs/`
 * `data_converter/dataset/`
 
-如果路径需要调整，直接修改 [compose.yaml](/mnt/code/dp_hirol-main/docker/compose.yaml) 里的 `volumes`。
+如果路径需要调整，直接修改 [compose.yaml](/mnt/code/dp_hirol-main/docker_for_train/compose.yaml) 里的 `volumes`。
