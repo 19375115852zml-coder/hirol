@@ -7,7 +7,7 @@ from scipy.spatial.transform import Rotation as R
 os.environ["RUST_LOG"] = "error"
 import glog as log
 
-from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Dataset
+from diffusion_policy.common.lerobot_v3_io import LeRobotV3Dataset
 
 class ObservationType(enum.Enum):
     JOINT_POSITION_ONLY = "jonit_position"
@@ -475,7 +475,7 @@ class LerobotEpisodeReader(RerunEpisodeReader):
         if self._contain_ft or self._obs_type == ObservationType.FT_ONLY:
             raise ValueError("LerobotEpisodeReader does not support FT observations in lerobot_v3 data.")
 
-        self._lerobot_dataset = CustomLeRobotV3Dataset(self.task_dir)
+        self._lerobot_dataset = LeRobotV3Dataset(self.task_dir)
         self._episode_starts = [int(x) for x in self._lerobot_dataset.episode_data_index["from"]]
         self._episode_ends = [int(x) for x in self._lerobot_dataset.episode_data_index["to"]]
         self._episode_count = len(self._episode_starts)
@@ -542,12 +542,10 @@ class LerobotEpisodeReader(RerunEpisodeReader):
         return camera_feature_map
 
     def _build_episode_tasks(self):
-        if "task" not in self._lerobot_dataset.episodes_table.column_names:
+        episode_tasks = getattr(self._lerobot_dataset, "episode_tasks", None)
+        if episode_tasks is None:
             return [""] * self._episode_count
-        return [
-            "" if task is None else str(task)
-            for task in self._lerobot_dataset.episodes_table.column("task").to_pylist()
-        ]
+        return list(episode_tasks)
 
     @staticmethod
     def _feature_vector(sample, feature_name, dtype=np.float32, fallback_key=None, fallback_slice=None):

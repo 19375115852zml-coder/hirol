@@ -1,9 +1,9 @@
-ARG CUDA_VERSION=11.6.2
-ARG UBUNTU_VERSION=20.04
+ARG CUDA_TAG=12.4.1-cudnn-devel-ubuntu22.04
+ARG CUDA_RUNTIME_TAG=12.4.1-cudnn-runtime-ubuntu22.04
 ARG PYTHON_VERSION=3.10
 ARG CUDA_IMAGE=docker.m.daocloud.io/nvidia/cuda
 
-FROM ${CUDA_IMAGE}:${CUDA_VERSION}-cudnn8-devel-ubuntu${UBUNTU_VERSION} AS builder
+FROM ${CUDA_IMAGE}:${CUDA_TAG} AS builder
 
 ARG PYTHON_VERSION
 
@@ -18,11 +18,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    software-properties-common \
     curl \
     git \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     ffmpeg \
@@ -62,20 +59,15 @@ COPY requirements ./requirements
 COPY setup.py ./
 COPY diffusion_policy ./diffusion_policy
 
-# Docker training images do not need OpenCV GUI bindings, and the common
-# requirements are installed separately so the PyTorch index does not shadow
-# PyPI packages.
-RUN sed -i 's/^opencv-python==4.6.0.66$/opencv-python-headless==4.6.0.66/' requirements/uv-common.txt \
-    && grep -v '^-r uv-common.txt$' requirements/uv-sim-cu116.txt > requirements/uv-sim-cu116.docker.txt
-
-# gym==0.21.0 ships legacy metadata rejected by pip>=24.1.
-RUN uv pip install -r requirements/uv-pip-bootstrap.txt
-RUN python -m pip install --no-build-isolation gym==0.21.0
-RUN uv pip install --index-strategy unsafe-best-match --build-constraints requirements/uv-build-constraints.txt -r requirements/uv-common.txt
-RUN uv pip install --index-strategy unsafe-best-match --build-constraints requirements/uv-build-constraints.txt -r requirements/uv-sim-cu116.docker.txt
+RUN uv pip install \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    --extra-index-url https://pypi.org/simple \
+    torch==2.6.0+cu124 \
+    torchvision==0.21.0+cu124
+RUN uv pip install --index-strategy unsafe-best-match -r requirements/uv-common-py310-lerobot.txt
 RUN uv pip install .
 
-FROM ${CUDA_IMAGE}:${CUDA_VERSION}-cudnn8-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+FROM ${CUDA_IMAGE}:${CUDA_RUNTIME_TAG} AS runtime
 
 ARG PYTHON_VERSION
 ARG USER_ID=1000
@@ -94,9 +86,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ffmpeg \
     git \

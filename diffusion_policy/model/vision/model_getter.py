@@ -30,4 +30,4 @@ def get_r3m(name, **kwargs):
     return resnet_model
 
 def get_dino_v3():
-
+    pass

@@ -13,7 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_converter.hirol_reader import HiROLEpisodeReader
-from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Writer
+from diffusion_policy.common.lerobot_v3_io import LeRobotV3Writer
 
 
 def _format_seconds(seconds: float) -> str:
@@ -145,14 +145,13 @@ def convert_dataset(
         fps = _infer_fps(episode_dirs, missing_policy)
 
     video_keys = [f"observation.images.{camera_key}" for camera_key in camera_keys]
-    dataset = CustomLeRobotV3Writer(
+    dataset = LeRobotV3Writer(
         root=str(output_dir),
         fps=fps,
         features=_build_feature_spec(image_shape=image_shape, camera_keys=camera_keys),
         video_keys=video_keys if use_videos else [],
         robot_type=robot_type,
         image_color_space="bgr" if use_videos else "rgb",
-        parquet_compression="none",
     )
 
     summaries: List[Dict] = []
@@ -227,7 +226,7 @@ def convert_dataset(
 
 
 def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Convert HIROL episodes to a LeRobot v3 dataset.")
+    parser = argparse.ArgumentParser(description="Convert HIROL episodes to an official LeRobot v3 dataset.")
     parser.add_argument(
         "--input-root",
         type=Path,

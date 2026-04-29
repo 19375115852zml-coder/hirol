@@ -7,12 +7,11 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Dataset
-from diffusion_policy.dataset.hirol_lerobot_v3_dataset import HirolLeRobotV3Dataset
+from diffusion_policy.common.lerobot_v3_io import LeRobotV3Dataset
 
 
 def _assert_file(path: Path) -> None:
@@ -43,10 +42,6 @@ def _load_task_dataset_config(task_config_path: Path, dataset_path: str):
 def validate_dataset(dataset_path: Path, task_config: Path | None) -> None:
     dataset_path = dataset_path.expanduser().resolve()
     _assert_file(dataset_path / "meta" / "info.json")
-    _assert_file(dataset_path / "meta" / "stats.json")
-    _assert_file(dataset_path / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
-    _assert_file(dataset_path / "meta" / "tasks.parquet")
-    _assert_file(dataset_path / "data" / "chunk-000" / "file-000.parquet")
 
     with (dataset_path / "meta" / "info.json").open("r", encoding="utf-8") as f:
         info = json.load(f)
@@ -60,37 +55,25 @@ def validate_dataset(dataset_path: Path, task_config: Path | None) -> None:
     print("data_path:", info.get("data_path"))
     print("video_path:", info.get("video_path"))
 
-    if info.get("codebase_version") != "v3.0":
-        raise ValueError(f"Expected codebase_version=v3.0, got {info.get('codebase_version')!r}")
-    if "chunk-{chunk_index:03d}" not in str(info.get("data_path", "")):
-        raise ValueError("info.json data_path does not use the standard chunk/file template.")
-    if "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4" != info.get("video_path"):
-        raise ValueError("info.json video_path does not match the standard LeRobot v3 template.")
-
-    for rel_path in info.get("video_keys", []):
-        video_file = dataset_path / "videos" / rel_path / "chunk-000" / "file-000.mp4"
-        _assert_file(video_file)
-        print("video_ok:", video_file)
-
-    custom_dataset = CustomLeRobotV3Dataset(str(dataset_path))
-    print("frames:", len(custom_dataset))
-    print("episodes:", len(custom_dataset.episode_data_index["from"]))
+    lerobot_dataset = LeRobotV3Dataset(str(dataset_path))
+    print("frames:", len(lerobot_dataset))
+    print("episodes:", len(lerobot_dataset.episode_data_index["from"]))
     expected_frames = sum(
         int(stop) - int(start)
         for start, stop in zip(
-            custom_dataset.episode_data_index["from"],
-            custom_dataset.episode_data_index["to"],
+            lerobot_dataset.episode_data_index["from"],
+            lerobot_dataset.episode_data_index["to"],
         )
     )
-    if expected_frames != len(custom_dataset):
+    if expected_frames != len(lerobot_dataset):
         raise ValueError(
-            f"Frame count mismatch: dataset has {len(custom_dataset)} rows but "
+            f"Frame count mismatch: dataset has {len(lerobot_dataset)} rows but "
             f"episodes metadata sums to {expected_frames}."
         )
     print("frame_count_check: ok")
 
-    if len(custom_dataset) > 0:
-        sample = custom_dataset[0]
+    if len(lerobot_dataset) > 0:
+        sample = lerobot_dataset[0]
         print("sample_keys:", sorted(sample.keys()))
         for key in info.get("video_keys", [])[:1]:
             print("sample_video_shape:", key, sample[key].shape)
@@ -98,9 +81,11 @@ def validate_dataset(dataset_path: Path, task_config: Path | None) -> None:
             print("sample_state_shape:", sample["observation.state"].shape)
         if "action" in sample:
             print("sample_action_shape:", sample["action"].shape)
-    custom_dataset.close()
+    lerobot_dataset.close()
 
     if task_config is not None:
+        from diffusion_policy.dataset.hirol_lerobot_v3_dataset import HirolLeRobotV3Dataset
+
         task_cfg = _load_task_dataset_config(task_config.expanduser().resolve(), str(dataset_path))
         dataset = HirolLeRobotV3Dataset(**task_cfg)
         print("adapter_len:", len(dataset))

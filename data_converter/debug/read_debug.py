@@ -1,4 +1,3 @@
-from data_converter.hirol_reader import HiROLEpisodeReader as HirolReader
 from __future__ import annotations
 
 import argparse
@@ -6,7 +5,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
-from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Writer
+
+from data_converter.hirol_reader import HiROLEpisodeReader as HirolReader
 
 import numpy as np
 

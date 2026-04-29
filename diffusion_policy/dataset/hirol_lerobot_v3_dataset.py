@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from diffusion_policy.common.lerobot_v3_io import CustomLeRobotV3Dataset
+from diffusion_policy.common.lerobot_v3_io import LeRobotV3Dataset
 from diffusion_policy.common.memory_budget import (
     compute_effective_budget_bytes,
     estimate_array_nbytes,
@@ -168,7 +168,10 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
 
         self.action_feature_fields = list(action_feature_fields or ["action"])
 
-        self.lerobot_dataset = CustomLeRobotV3Dataset(self.dataset_path)
+        self.lerobot_dataset = LeRobotV3Dataset(
+            self.dataset_path,
+            local_files_only=local_files_only,
+        )
         self.dataset_length = len(self.lerobot_dataset)
 
         self.timestamps = self._load_column(self.timestamp_key, dtype=np.float64).reshape(-1)
@@ -288,7 +291,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         try:
             values = self.lerobot_dataset.get_column(column_name)
         except KeyError as exc:
-            raise KeyError(f"Column {column_name!r} not found in custom LeRobot v3 dataset.") from exc
+            raise KeyError(f"Column {column_name!r} not found in LeRobot v3 dataset.") from exc
         return _stack_fixed_shape(values, dtype=dtype)
 
     def _load_episode_index(self) -> np.ndarray:
@@ -302,7 +305,7 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             return episode_index
 
         raise KeyError(
-            "Custom LeRobot v3 dataset does not expose episode_index or episode_data_index; "
+            "LeRobot v3 dataset does not expose episode_index or episode_data_index; "
             "cannot build episode-aware window sampling."
         )
 
