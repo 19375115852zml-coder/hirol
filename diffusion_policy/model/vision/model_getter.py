@@ -29,5 +29,20 @@ def get_r3m(name, **kwargs):
     resnet_model = resnet_model.to('cpu')
     return resnet_model
 
-def get_dino_v3():
-    pass
+def get_dino_v3(
+        model_name="facebook/dinov3-vitb16-pretrain-lvd1689m",
+        pooling="pooler",
+        freeze=False,
+        output_dim=None,
+        trust_remote_code=False,
+        interpolate_pos_encoding=True,
+        **kwargs):
+    from diffusion_policy.model.vision.dinov3_encoder import Dinov3Encoder
+    return Dinov3Encoder(
+        model_name=model_name,
+        pooling=pooling,
+        freeze=freeze,
+        output_dim=output_dim,
+        trust_remote_code=trust_remote_code,
+        interpolate_pos_encoding=interpolate_pos_encoding,
+    )
