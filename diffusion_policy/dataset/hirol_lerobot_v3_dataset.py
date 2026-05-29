@@ -118,6 +118,14 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         memory_reserve_gb: float = 2.0,
         load_result_add="ram",
         image_randomer_config: Optional[Mapping] = None,
+        ft_dataset_path: Optional[str] = None,
+        ft_feature_fields: Optional[Sequence[str]] = None,
+        ft_timestamp_key: str = "timestamp",
+        ft_obs_key: str = "ft_data",
+        ft_mask_key: str = "ft_mask",
+        ft_window_sec: float = 0.05,
+        ft_steps: Optional[int] = None,
+        ft_time_offset_sec: float = 0.0,
     ):
         super().__init__()
         if window_sampling_strategy not in {"idx", "timestamp"}:
@@ -149,11 +157,58 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             if image_randomer_config is not None
             else None
         )
+        self.ft_dataset_path = os.path.expanduser(ft_dataset_path) if ft_dataset_path else None
+        self.ft_feature_fields = list(ft_feature_fields or ["observation.ft"])
+        self.ft_timestamp_key = ft_timestamp_key
+        self.ft_obs_key = ft_obs_key
+        self.ft_mask_key = ft_mask_key
+        self.ft_window_sec = float(ft_window_sec)
+        self.ft_time_offset_sec = float(ft_time_offset_sec)
+        if self.ft_window_sec <= 0:
+            raise ValueError(f"ft_window_sec must be positive, got {self.ft_window_sec}.")
 
 
         obs_shape_meta = shape_meta["obs"]
         self.rgb_keys = [key for key, attr in obs_shape_meta.items() if attr.get("type") == "rgb"]
         self.lowdim_keys = [key for key, attr in obs_shape_meta.items() if attr.get("type") == "low_dim"]
+        self.ft_keys = [key for key, attr in obs_shape_meta.items() if attr.get("type") == "ft"]
+        self.use_ft = len(self.ft_keys) > 0
+        if len(self.ft_keys) > 1:
+            raise ValueError(
+                f"HirolLeRobotV3Dataset currently supports one FT obs key, got {self.ft_keys}."
+            )
+        if self.use_ft:
+            if self.ft_obs_key not in self.ft_keys:
+                if ft_obs_key == "ft_data":
+                    self.ft_obs_key = self.ft_keys[0]
+                else:
+                    raise ValueError(
+                        f"Configured ft_obs_key={ft_obs_key!r} is not declared as type 'ft' "
+                        f"in shape_meta obs keys {self.ft_keys}."
+                    )
+            if self.ft_dataset_path is None:
+                raise ValueError(
+                    f"shape_meta declares FT obs key {self.ft_obs_key!r}, "
+                    "but ft_dataset_path is not configured."
+                )
+            ft_shape = tuple(obs_shape_meta[self.ft_obs_key]["shape"])
+            if len(ft_shape) != 2:
+                raise ValueError(
+                    f"FT obs {self.ft_obs_key!r} must have shape [ft_steps, ft_dim], got {ft_shape}."
+                )
+            if ft_steps is not None and int(ft_steps) != int(ft_shape[0]):
+                raise ValueError(
+                    f"ft_steps={ft_steps} does not match shape_meta for {self.ft_obs_key!r}: {ft_shape}."
+                )
+            self.ft_steps = int(ft_shape[0])
+            self.ft_dim = int(ft_shape[1])
+            if self.ft_steps <= 0 or self.ft_dim <= 0:
+                raise ValueError(
+                    f"FT obs {self.ft_obs_key!r} must have positive [ft_steps, ft_dim], got {ft_shape}."
+                )
+        else:
+            self.ft_steps = int(ft_steps) if ft_steps is not None else 0
+            self.ft_dim = 0
 
         self.image_feature_map = dict(image_feature_map or {})
         for key in self.rgb_keys:
@@ -183,12 +238,64 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             self.episode_ranges,
             explicit_step_sec=timestamp_step_sec,
         )
+        self._validate_monotonic_timestamps(
+            timestamps=self.timestamps,
+            episode_ranges=self.episode_ranges,
+            name="main dataset",
+        )
 
         self.lowdim_data = {
             key: self._concat_columns(self.lowdim_feature_groups[key], dtype=np.float32)
             for key in self.lowdim_keys
         }
         self.action_data = self._concat_columns(self.action_feature_fields, dtype=np.float32)
+        self.ft_data = None
+        self.ft_timestamps = None
+        self.ft_episode_ranges = None
+        self.ft_dataset = None
+        if self.use_ft:
+            self.ft_dataset = LeRobotV3Dataset(
+                self.ft_dataset_path,
+                local_files_only=local_files_only,
+            )
+            ft_dataset_length = len(self.ft_dataset)
+            self.ft_timestamps = (
+                self._load_dataset_column(
+                    self.ft_dataset,
+                    self.ft_timestamp_key,
+                    dtype=np.float64,
+                    dataset_name="FT LeRobot v3 dataset",
+                ).reshape(-1)
+                + self.ft_time_offset_sec
+            )
+            ft_episode_index = self._load_episode_index_from_dataset(
+                self.ft_dataset,
+                dataset_length=ft_dataset_length,
+                dataset_name="FT LeRobot v3 dataset",
+            )
+            ft_episode_ends = self._build_episode_ends(ft_episode_index)
+            self.ft_episode_ranges = self._build_episode_ranges(ft_episode_ends)
+            if len(self.ft_episode_ranges) != len(self.episode_ranges):
+                raise ValueError(
+                    "Main and FT LeRobot v3 datasets must have the same number of episodes. "
+                    f"Got main={len(self.episode_ranges)}, ft={len(self.ft_episode_ranges)}."
+                )
+            self._validate_monotonic_timestamps(
+                timestamps=self.ft_timestamps,
+                episode_ranges=self.ft_episode_ranges,
+                name="FT dataset",
+            )
+            self.ft_data = self._load_ft_columns(
+                self.ft_dataset,
+                column_names=self.ft_feature_fields,
+                dtype=np.float32,
+            )
+            if self.ft_data.shape[1] != self.ft_dim:
+                raise ValueError(
+                    f"FT data shape mismatch. Got {self.ft_data.shape[1:]}, expected ({self.ft_dim},). "
+                    f"Source fields: {self.ft_feature_fields}"
+                )
+            self.ft_dataset.close()
 
         for key in self.lowdim_keys:
             expected = tuple(obs_shape_meta[key]["shape"])
@@ -288,24 +395,50 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         return None
 
     def _load_column(self, column_name: str, dtype) -> np.ndarray:
+        return self._load_dataset_column(
+            self.lerobot_dataset,
+            column_name,
+            dtype=dtype,
+            dataset_name="LeRobot v3 dataset",
+        )
+
+    @staticmethod
+    def _load_dataset_column(
+        dataset: LeRobotV3Dataset,
+        column_name: str,
+        dtype,
+        dataset_name: str,
+    ) -> np.ndarray:
         try:
-            values = self.lerobot_dataset.get_column(column_name)
+            values = dataset.get_column(column_name)
         except KeyError as exc:
-            raise KeyError(f"Column {column_name!r} not found in LeRobot v3 dataset.") from exc
+            raise KeyError(f"Column {column_name!r} not found in {dataset_name}.") from exc
         return _stack_fixed_shape(values, dtype=dtype)
 
     def _load_episode_index(self) -> np.ndarray:
-        episode_data_index = getattr(self.lerobot_dataset, "episode_data_index", None)
+        return self._load_episode_index_from_dataset(
+            self.lerobot_dataset,
+            dataset_length=self.dataset_length,
+            dataset_name="LeRobot v3 dataset",
+        )
+
+    @staticmethod
+    def _load_episode_index_from_dataset(
+        dataset: LeRobotV3Dataset,
+        dataset_length: int,
+        dataset_name: str,
+    ) -> np.ndarray:
+        episode_data_index = getattr(dataset, "episode_data_index", None)
         if episode_data_index is not None and "from" in episode_data_index and "to" in episode_data_index:
             starts = _to_numpy(episode_data_index["from"]).astype(np.int64).reshape(-1)
             stops = _to_numpy(episode_data_index["to"]).astype(np.int64).reshape(-1)
-            episode_index = np.empty((self.dataset_length,), dtype=np.int64)
+            episode_index = np.empty((dataset_length,), dtype=np.int64)
             for ep_idx, (start, stop) in enumerate(zip(starts, stops)):
                 episode_index[start:stop] = ep_idx
             return episode_index
 
         raise KeyError(
-            "LeRobot v3 dataset does not expose episode_index or episode_data_index; "
+            f"{dataset_name} does not expose episode_index or episode_data_index; "
             "cannot build episode-aware window sampling."
         )
 
@@ -314,6 +447,39 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
         if len(arrays) == 1:
             return arrays[0].astype(dtype, copy=False)
         return np.concatenate(arrays, axis=-1).astype(dtype, copy=False)
+
+    def _load_ft_columns(
+        self,
+        dataset: LeRobotV3Dataset,
+        column_names: Sequence[str],
+        dtype,
+    ) -> np.ndarray:
+        arrays = [
+            self._load_dataset_column(
+                dataset,
+                column_name,
+                dtype=dtype,
+                dataset_name="FT LeRobot v3 dataset",
+            ).reshape(len(dataset), -1)
+            for column_name in column_names
+        ]
+        if len(arrays) == 1:
+            return arrays[0].astype(dtype, copy=False)
+        return np.concatenate(arrays, axis=-1).astype(dtype, copy=False)
+
+    @staticmethod
+    def _validate_monotonic_timestamps(
+        timestamps: np.ndarray,
+        episode_ranges: Sequence[range],
+        name: str,
+    ) -> None:
+        for episode_idx, episode_range in enumerate(episode_ranges):
+            episode_timestamps = timestamps[episode_range.start : episode_range.stop]
+            diffs = np.diff(episode_timestamps)
+            if np.any(~np.isfinite(episode_timestamps)):
+                raise ValueError(f"{name} episode {episode_idx} has non-finite timestamps.")
+            if np.any(diffs < 0):
+                raise ValueError(f"{name} episode {episode_idx} timestamps must be sorted ascending.")
 
     def _estimate_image_preload_bytes(self) -> int:
         total = 0
@@ -457,6 +623,70 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
     
         return np.stack(augmented_images, axis=0)
 
+    def _sample_ft_window(self, obs_idx: int) -> tuple[np.ndarray, np.ndarray]:
+        if not self.use_ft:
+            raise RuntimeError("FT sampling requested but FT support is disabled.")
+
+        episode_idx = int(self.episode_index[obs_idx])
+        ft_episode_range = self.ft_episode_ranges[episode_idx]
+        episode_ft_timestamps = self.ft_timestamps[ft_episode_range.start : ft_episode_range.stop]
+        episode_ft_data = self.ft_data[ft_episode_range.start : ft_episode_range.stop]
+
+        t_img = float(self.timestamps[obs_idx])
+        target_start = t_img - self.ft_window_sec
+        target_timestamps = np.linspace(
+            target_start,
+            t_img,
+            self.ft_steps,
+            dtype=np.float64,
+        )
+
+        left_idx = np.searchsorted(episode_ft_timestamps, target_start, side="left")
+        right_idx = np.searchsorted(episode_ft_timestamps, t_img, side="right")
+        window_timestamps = episode_ft_timestamps[left_idx:right_idx]
+        window_data = episode_ft_data[left_idx:right_idx]
+
+        aligned = np.zeros((self.ft_steps, self.ft_dim), dtype=np.float32)
+        mask = np.zeros((self.ft_steps,), dtype=np.bool_)
+        if window_timestamps.size == 0:
+            return aligned, mask
+
+        unique_timestamps, unique_indices = np.unique(window_timestamps, return_index=True)
+        unique_data = window_data[unique_indices].astype(np.float32, copy=False)
+        if unique_timestamps.size == 1:
+            nearest_idx = int(np.argmin(np.abs(target_timestamps - unique_timestamps[0])))
+            aligned[nearest_idx] = unique_data[0]
+            mask[nearest_idx] = True
+            return aligned, mask
+
+        valid = (target_timestamps >= unique_timestamps[0]) & (
+            target_timestamps <= unique_timestamps[-1]
+        )
+        if not np.any(valid):
+            return aligned, mask
+
+        valid_target_timestamps = target_timestamps[valid]
+        for dim_idx in range(self.ft_dim):
+            aligned[valid, dim_idx] = np.interp(
+                valid_target_timestamps,
+                unique_timestamps,
+                unique_data[:, dim_idx],
+            ).astype(np.float32)
+        mask[valid] = True
+        return aligned, mask
+
+    def _sample_ft_sequence(self, obs_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        ft_windows = []
+        ft_masks = []
+        for obs_idx in obs_indices:
+            window, mask = self._sample_ft_window(int(obs_idx))
+            ft_windows.append(window)
+            ft_masks.append(mask)
+        return (
+            np.stack(ft_windows, axis=0).astype(np.float32, copy=False),
+            np.stack(ft_masks, axis=0),
+        )
+
     def get_validation_dataset(self) -> "HirolLeRobotV3Dataset":
         val_set = copy.copy(self)
         val_set.indices = create_indices(
@@ -478,6 +708,9 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
             normalizer[key] = SingleFieldLinearNormalizer.create_fit(self.lowdim_data[key],**kwargs)
         for key in self.rgb_keys:
             normalizer[key] = get_image_range_normalizer() 
+        if self.use_ft:
+            normalizer[self.ft_obs_key] = get_image_identity_normalizer()
+            normalizer[self.ft_mask_key] = get_image_identity_normalizer()
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
@@ -519,6 +752,11 @@ class HirolLeRobotV3Dataset(BaseImageDataset):
 
         for key in self.lowdim_keys:
             obs_dict[key] = self.lowdim_data[key][obs_indices, ...].astype(np.float32, copy=False)
+
+        if self.use_ft:
+            ft_data, ft_mask = self._sample_ft_sequence(obs_indices)
+            obs_dict[self.ft_obs_key] = ft_data
+            obs_dict[self.ft_mask_key] = ft_mask
 
         action = self.action_data[sequence_indices, ...].astype(np.float32, copy=False)
         if self.n_latency_steps > 0:
