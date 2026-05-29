@@ -40,9 +40,10 @@ policy:
   obs_encoder:
     _target_: diffusion_policy.model.vision.dino_ft_cross_attention_obs_encoder.DinoFtCrossAttentionObsEncoder
     shape_meta: ${shape_meta}
-    image_model_name: facebook/dinov3-vitb16-pretrain-lvd1689m # 
+    image_model_name: facebook/dinov3-vitb16-pretrain-lvd1689m
     image_freeze: True
     image_resize_shape: [224, 224]
+    image_input_range: minus_one_one
     image_imagenet_norm: True
     ft_key: ft_data
     ft_mask_key: ft_mask
@@ -113,7 +114,7 @@ training:
   num_epochs: 1000
   gradient_accumulate_every: 1
   use_ema: True
-  freeze_encoder: True
+  freeze_encoder: False
   rollout_every: 15
   checkpoint_every: 10
   val_every: 1

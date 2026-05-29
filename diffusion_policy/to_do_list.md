@@ -130,3 +130,87 @@
 
   建议第一个 commit 只做 dataloader FT 对齐 + debug 验证，不要同时碰
   model。这个阶段稳定后，再进入 FT-LSTM 和 cross attention。
+
+  已完成：
+
+  1. Dataloader 接入 FT 数据集
+      - 文件：diffusion_policy/dataset/hirol_lerobot_v3_dataset.py
+      - 支持第二个 LeRobotV3 FT dataset。
+      - FT 字段默认：
+
+        ft_feature_fields:
+          - observation.ft
+        ft_timestamp_key: timestamp
+      - 按主数据集 obs image timestamp 对齐 FT：
+
+        FT window = (t_img - ft_window_sec, t_img]
+      - timestamp 使用 float64，没有转 int。
+      - 输出：
+
+        obs["ft_data"]  # [To, K, 6]
+        obs["ft_mask"]  # [To, K]
+  2. FT shape_meta / task config
+      - 新增：diffusion_policy/config/lerobot_v3/task_lerobot_v3/
+        pick_n_place_ft/hirol_fr3_pnp_cam_state_ft_to_ee_unet.yaml
+      - 加了：
+
+        ft_data:
+          shape: [10, 6]
+          type: ft
+  3. FT train config 初版
+      - 新增：diffusion_policy/config/lerobot_v3/train_lerobot_v3/
+        pick_n_place_ft/cam_state_ft_ee2ee_dino_lstm_xattn.yaml
+      - 包含：
+
+        dataset_path: ???
+        ft_dataset_path: ???
+        ft_window_sec: 0.05
+        ft_steps: 10
+      - encoder target 已预留为：
+
+        DinoFtCrossAttentionObsEncoder
+  4. 基础验证
+      - hirol_lerobot_v3_dataset.py 语法检查通过。
+      - git diff --check 通过。
+      - YAML parse 没跑，因为当前环境没有 yaml 包。
+
+  还要完成：
+
+  1. 实现 multimodal encoder
+      - 新文件建议：
+
+        diffusion_policy/model/vision/
+  dino_ft_cross_attention_obs_encoder.py
+      - 功能：
+
+        image -> DINOv3 tokens
+        ft_data -> LSTM tokens
+        lowdim -> state token
+        tokens -> cross attention
+        return [B*To, D_fused]
+  2. 调整 DINOv3 wrapper
+      - 当前 DINOv3 wrapper 偏 pooled output。
+      - cross attention 最好需要 patch tokens，所以要支持：
+
+        return_patch_tokens=True
+  3. 确认 policy 是否无需改动
+      - 目标是保持 DiffusionUnetImagePolicy 不改。
+      - 新 encoder 继续实现：
+
+        forward(obs_dict) -> [B*To, D]
+        output_shape() -> (D,)
+  4. 真实数据验证 dataloader
+      - 用真实 dataset_path 和 ft_dataset_path 跑一个 sample。
+      - 检查：
+
+        obs["ft_data"].shape == [To, 10, 6]
+        obs["ft_mask"].shape == [To, 10]
+        max(valid_ft_timestamp) <= image_timestamp
+      - 确认没有跨 episode 对齐。
+  5. 训练前 smoke test
+      - 实例化新 config。
+      - 跑一个 batch forward。
+      - 跑 5-10 step training，确认 loss、shape、显存都正常。
+
+  当前状态一句话：dataloader + config 骨架已完成；还缺核心 multimodal
+  encoder 和真实数据/训练验证。
